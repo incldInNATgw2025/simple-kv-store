@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -52,9 +53,26 @@ func putHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+func getHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key := vars["key"]
+
+	value, err := Get(key)
+	if errors.Is(err, ErrorNoSuchKey) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprint(w, value)
+}
+
 func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/v1/key/{key}", putHandler).Methods(http.MethodPut)
+	r.HandleFunc("/v1/key/{key}", getHandler).Methods(http.MethodGet)
 
 	log.Fatal(http.ListenAndServe(":8082", r))
 
