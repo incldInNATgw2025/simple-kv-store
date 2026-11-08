@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -33,17 +33,28 @@ func Delete(key string) error {
 	return nil
 }
 
-func helloGoHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "Hello net/http!")
-}
+func putHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key := vars["key"]
 
-func helloMuxHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "Hello gorilla/mux!")
+	value, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	err = Put(key, string(value))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
 }
 
 func main() {
 	r := mux.NewRouter()
-	r.HandleFunc("/", helloMuxHandler)
+	r.HandleFunc("/v1/key/{key}", putHandler).Methods(http.MethodPut)
 
 	log.Fatal(http.ListenAndServe(":8082", r))
 
