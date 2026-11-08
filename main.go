@@ -6,14 +6,24 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
 )
 
-var store = make(map[string]string)
+type LockableMap struct {
+	sync.RWMutex
+	m map[string]string
+}
+
+var store = LockableMap{
+	m: make(map[string]string),
+}
 
 func Put(key, value string) error {
-	store[key] = value
+	store.Lock()
+	defer store.Unlock()
+	store.m[key] = value
 
 	return nil
 }
@@ -21,7 +31,9 @@ func Put(key, value string) error {
 var ErrorNoSuchKey = errors.New("no such key")
 
 func Get(key string) (string, error) {
-	value, ok := store[key]
+	store.RLock()
+	defer store.RUnlock()
+	value, ok := store.m[key]
 
 	if !ok {
 		return "", ErrorNoSuchKey
@@ -30,7 +42,9 @@ func Get(key string) (string, error) {
 }
 
 func Delete(key string) error {
-	delete(store, key)
+	store.RLock()
+	defer store.RUnlock()
+	delete(store.m, key)
 	return nil
 }
 
