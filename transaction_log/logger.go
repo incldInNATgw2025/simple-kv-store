@@ -1,6 +1,7 @@
 package transactionlog
 
 import (
+	"bufio"
 	"fmt"
 	"kv-store/event"
 	"os"
@@ -9,6 +10,9 @@ import (
 type TransactionLogger interface {
 	WriteDelete(key string)
 	WritePut(key, value string)
+	Err() <-chan error
+	Run()
+	ReadEvents() (<-chan event.Event, <-chan error)
 }
 
 type FileTransactionLogger struct {
@@ -60,4 +64,39 @@ func (l *FileTransactionLogger) Run() {
 		}
 	}()
 
+}
+
+func (l *FileTransactionLogger) ReadEvents() (<-chan event.Event, <-chan error) {
+	scanner := bufio.NewScanner(l.file)
+	outEvent := make(chan event.Event)
+	outError := make(chan error, 1)
+
+	go func() {
+		var e event.Event
+
+		defer close(outEvent)
+		defer close(outError)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if _, err := fmt.Sscanf(line, "%d\t%d\t%s\t%s", &e.Sequence, &e.EventType, &e.Key, &e.Value); err != nil {
+				outError <- fmt.Errorf("input parse error: %w", err)
+				return
+			}
+			if l.lastSequence >= e.Sequence {
+				outError <- fmt.Errorf("transaction numbers out of sequence")
+				return
+			}
+			l.lastSequence = e.Sequence
+			outEvent <- e
+
+		}
+		if err := scanner.Err(); err != nil {
+			outError <- fmt.Errorf("transaction log read failure: %w", err)
+			return
+		}
+	}()
+
+	return outEvent, outError
 }
