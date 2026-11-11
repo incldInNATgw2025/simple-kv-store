@@ -120,7 +120,7 @@ func InitializeTransactionLog() error {
 			switch e.EventType {
 			case event.EventDelete:
 				err = Delete(e.Key)
-			case event.EvenPut:
+			case event.EventPut:
 				err = Put(e.Key, e.Value)
 			}
 		}

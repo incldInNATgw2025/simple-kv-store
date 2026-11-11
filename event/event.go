@@ -10,6 +10,6 @@ type EventType byte
 
 const (
 	_                     = iota
-	EvenPut     EventType = iota
+	EventPut    EventType = iota
 	EventDelete EventType = iota
 )

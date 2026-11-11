@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"kv-store/event"
 	"os"
+	"sync"
 )
 
 type TransactionLogger interface {
@@ -21,10 +22,11 @@ type FileTransactionLogger struct {
 	errors       <-chan error
 	lastSequence uint64
 	file         *os.File
+	wg           sync.WaitGroup
 }
 
 func (l *FileTransactionLogger) WritePut(key, value string) {
-	l.events <- event.Event{EventType: event.EvenPut, Key: key, Value: value}
+	l.events <- event.Event{EventType: event.EventPut, Key: key, Value: value}
 }
 
 func (l *FileTransactionLogger) WriteDelete(key string) {
@@ -44,6 +46,12 @@ func NewFileTransactionLogger(filename string) (TransactionLogger, error) {
 }
 
 func (l *FileTransactionLogger) Close() error {
+	close(l.events)
+	l.wg.Wait()
+	if err := l.file.Sync(); err != nil {
+		l.file.Close()
+		return err
+	}
 	return l.file.Close()
 }
 
@@ -54,7 +62,9 @@ func (l *FileTransactionLogger) Run() {
 	errors := make(chan error, 1)
 	l.errors = errors
 
+	l.wg.Add(1)
 	go func() {
+		defer l.wg.Done()
 		for e := range events {
 			l.lastSequence++
 
