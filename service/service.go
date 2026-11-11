@@ -128,3 +128,7 @@ func InitializeTransactionLog() error {
 	logger.Run()
 	return err
 }
+
+func CloseTransactionLog() error {
+	return logger.Close()
+}

@@ -13,6 +13,7 @@ type TransactionLogger interface {
 	Err() <-chan error
 	Run()
 	ReadEvents() (<-chan event.Event, <-chan error)
+	Close() error
 }
 
 type FileTransactionLogger struct {
@@ -40,6 +41,10 @@ func NewFileTransactionLogger(filename string) (TransactionLogger, error) {
 		return nil, fmt.Errorf("cannot open transaction log file: %w", err)
 	}
 	return &FileTransactionLogger{file: file}, nil
+}
+
+func (l *FileTransactionLogger) Close() error {
+	return l.file.Close()
 }
 
 func (l *FileTransactionLogger) Run() {
