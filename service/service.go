@@ -65,6 +65,7 @@ func PutHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logger.WritePut(key, string(value))
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -82,11 +83,25 @@ func GetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Fprint(w, value)
+	w.WriteHeader(http.StatusOK)
+}
+
+func DeleteHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key := vars["key"]
+
+	err := Delete(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	logger.WriteDelete(key)
+	w.WriteHeader(http.StatusOK)
 }
 
 var logger transactionlog.TransactionLogger
 
-func initializeTransactionLog() error {
+func InitializeTransactionLog() error {
 	var err error
 
 	logger, err = transactionlog.NewFileTransactionLogger("transaction.log")
