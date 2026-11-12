@@ -23,6 +23,7 @@ type FileTransactionLogger struct {
 	lastSequence uint64
 	file         *os.File
 	wg           sync.WaitGroup
+	w            *bufio.Writer
 }
 
 func (l *FileTransactionLogger) WritePut(key, value string) {
@@ -46,13 +47,28 @@ func NewFileTransactionLogger(filename string) (TransactionLogger, error) {
 }
 
 func (l *FileTransactionLogger) Close() error {
-	close(l.events)
-	l.wg.Wait()
-	if err := l.file.Sync(); err != nil {
-		l.file.Close()
-		return err
+	close(l.events) // không nhận thêm event
+	l.wg.Wait()     // goroutine đã rút hết channel và thoát
+
+	var firstErr error
+	keep := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return l.file.Close()
+
+	// lấy lỗi ghi trước đó (nếu có) từ goroutine
+	select {
+	case err := <-l.errors:
+		keep(err)
+	default:
+	}
+
+	keep(l.w.Flush())    // 1. đẩy bufio xuống file
+	keep(l.file.Sync())  // 2. đẩy từ bộ đệm HĐH xuống đĩa
+	keep(l.file.Close()) // 3. luôn đóng file, kể cả khi bước trên lỗi
+
+	return firstErr
 }
 
 func (l *FileTransactionLogger) Run() {
@@ -62,19 +78,47 @@ func (l *FileTransactionLogger) Run() {
 	errors := make(chan error, 1)
 	l.errors = errors
 
+	l.w = bufio.NewWriter(l.file)
+
 	l.wg.Add(1)
+	//goroutine chạy riêng
 	go func() {
 		defer l.wg.Done()
+		failed := false
+
+		report := func(err error) {
+			failed = true
+			select {
+			case errors <- err:
+			default:
+			}
+		}
+
 		for e := range events {
+			if failed {
+				continue
+			}
 			l.lastSequence++
 
 			_, err := fmt.Fprintf(
-				l.file,
+				l.w,
 				"%d\t%d\t%s\t%s\n",
 				l.lastSequence, e.EventType, e.Key, e.Value)
 			if err != nil {
-				errors <- err
-				return
+				report(err)
+				continue
+			}
+
+			if len(events) == 0 {
+				if err := l.w.Flush(); err != nil {
+					report(err)
+				}
+			}
+		}
+
+		if !failed {
+			if err := l.w.Flush(); err != nil {
+				report(err)
 			}
 		}
 	}()
