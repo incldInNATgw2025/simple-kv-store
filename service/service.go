@@ -6,6 +6,7 @@ import (
 	"io"
 	"kv-store/event"
 	transactionlog "kv-store/transaction_log"
+	"log"
 	"net/http"
 	"sync"
 
@@ -55,8 +56,16 @@ func PutHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["key"]
 
+	const maxValueSize = 1 << 20 // 1 MiB
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxValueSize)
 	value, err := io.ReadAll(r.Body)
 	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			http.Error(w, "value too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -91,7 +100,6 @@ func GetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Fprint(w, value)
-	w.WriteHeader(http.StatusOK)
 }
 
 func DeleteHandler(w http.ResponseWriter, r *http.Request) {
@@ -116,31 +124,48 @@ func DeleteHandler(w http.ResponseWriter, r *http.Request) {
 var logger transactionlog.TransactionLogger
 
 func InitializeTransactionLog() error {
-	var err error
+	return InitializeTransactionLogAt("transaction.log")
+}
 
-	logger, err = transactionlog.NewFileTransactionLogger("transaction.log")
+func InitializeTransactionLogAt(path string) error {
+	l, err := transactionlog.NewFileTransactionLogger(path)
 	if err != nil {
 		return fmt.Errorf("failed to create event logger: %w", err)
 	}
-	events, errors := logger.ReadEvents()
+	logger = l
 
-	e := event.Event{}
-	ok := true
-
-	for ok && err == nil {
+	events, errCh := l.ReadEvents()
+	for events != nil || errCh != nil {
 		select {
-		case err, ok = <-errors:
-		case e, ok = <-events:
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			_ = l.Close()
+			return fmt.Errorf("failed to replay transaction log: %w", err)
+
+		case e, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
 			switch e.EventType {
 			case event.EventDelete:
-				err = Delete(e.Key)
+				_ = Delete(e.Key)
 			case event.EventPut:
-				err = Put(e.Key, e.Value)
+				_ = Put(e.Key, e.Value)
 			}
 		}
 	}
-	logger.Run()
-	return err
+
+	l.Run()
+	go func() {
+		for err := range l.Err() {
+			log.Printf("transaction log write failed: %s", err)
+		}
+	}()
+	return nil
 }
 
 func CloseTransactionLog() error {

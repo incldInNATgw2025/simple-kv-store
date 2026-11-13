@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"kv-store/event"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -22,7 +24,7 @@ type TransactionLogger interface {
 
 type FileTransactionLogger struct {
 	events       chan<- event.Event
-	errors       <-chan error
+	errors       chan error
 	lastSequence uint64
 	file         *os.File
 	wg           sync.WaitGroup
@@ -57,6 +59,9 @@ func (l *FileTransactionLogger) write(e event.Event) error {
 	if l.closed {
 		return ErrLoggerClosed
 	}
+	if l.events == nil {
+		return errors.New("transaction logger is not running")
+	}
 	if err := l.failure(); err != nil {
 		return fmt.Errorf("transaction log failed: %w", err)
 	}
@@ -77,7 +82,7 @@ func (l *FileTransactionLogger) Err() <-chan error {
 }
 
 func NewFileTransactionLogger(filename string) (TransactionLogger, error) {
-	file, err := os.OpenFile(filename, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0755)
+	file, err := os.OpenFile(filename, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open transaction log file: %w", err)
 	}
@@ -93,8 +98,13 @@ func (l *FileTransactionLogger) Close() error {
 	}
 	l.closed = true
 
+	if l.events == nil { // Run chưa được gọi, chỉ cần đóng file
+		l.mu.Unlock()
+		return l.file.Close()
+	}
 	close(l.events) // không nhận thêm event
-	l.wg.Wait()     // goroutine đã rút hết channel và thoát
+	l.mu.Unlock()
+	l.wg.Wait() // goroutine đã rút hết channel và thoát
 
 	var firstErr error
 	keep := func(err error) {
@@ -103,29 +113,24 @@ func (l *FileTransactionLogger) Close() error {
 		}
 	}
 
-	// lấy lỗi ghi trước đó (nếu có) từ goroutine
-	select {
-	case err := <-l.errors:
-		keep(err)
-	default:
-	}
-
 	keep(l.failure())
 	keep(l.w.Flush())    // 1. đẩy bufio xuống file
 	keep(l.file.Sync())  // 2. đẩy từ bộ đệm HĐH xuống đĩa
 	keep(l.file.Close()) // 3. luôn đóng file, kể cả khi bước trên lỗi
+	close(l.errors)
 
 	return firstErr
 }
 
 func (l *FileTransactionLogger) Run() {
 	events := make(chan event.Event, 16)
+	errCh := make(chan error, 1)
+
+	l.mu.Lock()
 	l.events = events
-
-	errors := make(chan error, 1)
-	l.errors = errors
-
+	l.errors = errCh
 	l.w = bufio.NewWriter(l.file)
+	l.mu.Unlock()
 
 	l.wg.Add(1)
 	//goroutine chạy riêng
@@ -137,7 +142,7 @@ func (l *FileTransactionLogger) Run() {
 			l.setFailure(err)
 			failed = true
 			select {
-			case errors <- err:
+			case errCh <- err:
 			default:
 			}
 		}
@@ -150,7 +155,7 @@ func (l *FileTransactionLogger) Run() {
 
 			_, err := fmt.Fprintf(
 				l.w,
-				"%d\t%d\t%s\t%s\n",
+				"%d\t%d\t%q\t%q\n",
 				l.lastSequence, e.EventType, e.Key, e.Value)
 			if err != nil {
 				report(err)
@@ -175,28 +180,54 @@ func (l *FileTransactionLogger) Run() {
 
 func (l *FileTransactionLogger) ReadEvents() (<-chan event.Event, <-chan error) {
 	scanner := bufio.NewScanner(l.file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	outEvent := make(chan event.Event)
 	outError := make(chan error, 1)
 
 	go func() {
-		var e event.Event
 
 		defer close(outEvent)
 		defer close(outError)
 
 		for scanner.Scan() {
 			line := scanner.Text()
+			parts := strings.SplitN(line, "\t", 4)
+			if len(parts) != 4 {
+				outError <- fmt.Errorf("input parse error: malformed line %q", line)
+				return
+			}
 
-			if _, err := fmt.Sscanf(line, "%d\t%d\t%s\t%s", &e.Sequence, &e.EventType, &e.Key, &e.Value); err != nil {
+			seq, err := strconv.ParseUint(parts[0], 10, 64)
+			if err != nil {
 				outError <- fmt.Errorf("input parse error: %w", err)
 				return
 			}
-			if l.lastSequence >= e.Sequence {
+			typ, err := strconv.ParseUint(parts[1], 10, 8)
+			if err != nil {
+				outError <- fmt.Errorf("input parse error: %w", err)
+				return
+			}
+			if l.lastSequence >= seq {
 				outError <- fmt.Errorf("transaction numbers out of sequence")
 				return
 			}
-			l.lastSequence = e.Sequence
-			outEvent <- e
+			l.lastSequence = seq
+			key, err := strconv.Unquote(parts[2])
+			if err != nil {
+				outError <- fmt.Errorf("input parse error: bad key: %w", err)
+				return
+			}
+			value, err := strconv.Unquote(parts[3])
+			if err != nil {
+				outError <- fmt.Errorf("input parse error: bad value: %w", err)
+				return
+			}
+			outEvent <- event.Event{
+				Sequence:  seq,
+				EventType: event.EventType(typ), // đổi tên kiểu nếu package event đặt khác
+				Key:       key,
+				Value:     value,
+			}
 
 		}
 		if err := scanner.Err(); err != nil {
