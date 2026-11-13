@@ -2,15 +2,18 @@ package transactionlog
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"kv-store/event"
 	"os"
 	"sync"
 )
 
+var ErrLoggerClosed = errors.New("transaction logger is closed")
+
 type TransactionLogger interface {
-	WriteDelete(key string)
-	WritePut(key, value string)
+	WriteDelete(key string) error
+	WritePut(key, value string) error
 	Err() <-chan error
 	Run()
 	ReadEvents() (<-chan event.Event, <-chan error)
@@ -24,14 +27,49 @@ type FileTransactionLogger struct {
 	file         *os.File
 	wg           sync.WaitGroup
 	w            *bufio.Writer
+
+	mu     sync.RWMutex // bảo vệ closed và việc gửi vào channel
+	closed bool
+
+	errMu   sync.Mutex // bảo vệ failErr
+	failErr error
 }
 
-func (l *FileTransactionLogger) WritePut(key, value string) {
-	l.events <- event.Event{EventType: event.EventPut, Key: key, Value: value}
+func (l *FileTransactionLogger) setFailure(err error) {
+	l.errMu.Lock()
+	defer l.errMu.Unlock()
+	if l.failErr == nil { // giữ lỗi đầu tiên
+		l.failErr = err
+	}
 }
 
-func (l *FileTransactionLogger) WriteDelete(key string) {
-	l.events <- event.Event{EventType: event.EventDelete, Key: key}
+func (l *FileTransactionLogger) failure() error {
+	l.errMu.Lock()
+	defer l.errMu.Unlock()
+	return l.failErr
+}
+
+func (l *FileTransactionLogger) write(e event.Event) error {
+
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if l.closed {
+		return ErrLoggerClosed
+	}
+	if err := l.failure(); err != nil {
+		return fmt.Errorf("transaction log failed: %w", err)
+	}
+	l.events <- e
+	return nil
+}
+
+func (l *FileTransactionLogger) WritePut(key, value string) error {
+	return l.write(event.Event{EventType: event.EventPut, Key: key, Value: value})
+}
+
+func (l *FileTransactionLogger) WriteDelete(key string) error {
+	return l.write(event.Event{EventType: event.EventDelete, Key: key})
 }
 
 func (l *FileTransactionLogger) Err() <-chan error {
@@ -47,6 +85,14 @@ func NewFileTransactionLogger(filename string) (TransactionLogger, error) {
 }
 
 func (l *FileTransactionLogger) Close() error {
+
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return ErrLoggerClosed
+	}
+	l.closed = true
+
 	close(l.events) // không nhận thêm event
 	l.wg.Wait()     // goroutine đã rút hết channel và thoát
 
@@ -64,6 +110,7 @@ func (l *FileTransactionLogger) Close() error {
 	default:
 	}
 
+	keep(l.failure())
 	keep(l.w.Flush())    // 1. đẩy bufio xuống file
 	keep(l.file.Sync())  // 2. đẩy từ bộ đệm HĐH xuống đĩa
 	keep(l.file.Close()) // 3. luôn đóng file, kể cả khi bước trên lỗi
@@ -87,6 +134,7 @@ func (l *FileTransactionLogger) Run() {
 		failed := false
 
 		report := func(err error) {
+			l.setFailure(err)
 			failed = true
 			select {
 			case errors <- err:

@@ -21,6 +21,8 @@ var store = LockableMap{
 	m: make(map[string]string),
 }
 
+var writeMu sync.Mutex
+
 func Put(key, value string) error {
 	store.Lock()
 	defer store.Unlock()
@@ -60,12 +62,18 @@ func PutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	err = Put(key, string(value))
+	writeMu.Lock()
+	err = logger.WritePut(key, string(value))
+	if err == nil {
+		err = Put(key, string(value))
+	}
+	writeMu.Unlock()
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	logger.WritePut(key, string(value))
+
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -90,13 +98,19 @@ func DeleteHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["key"]
 
-	err := Delete(key)
+	writeMu.Lock()
+	err := logger.WriteDelete(key)
+
+	if err == nil {
+		err = Delete(key)
+	}
+	writeMu.Unlock()
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	logger.WriteDelete(key)
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 var logger transactionlog.TransactionLogger
