@@ -139,14 +139,14 @@ func (l *PostgresTransactionLogger) createTable() error {
 }
 
 type PostgresDBParams struct {
-	dbName   string
-	host     string
-	user     string
-	password string
+	DbName   string
+	Host     string
+	User     string
+	Password string
 }
 
 func NewPostgresTransactionLogger(config PostgresDBParams) (TransactionLogger, error) {
-	connStr := fmt.Sprintf("host=%s dbname=%s user=%s password=%s", config.host, config.dbName, config.user, config.password)
+	connStr := fmt.Sprintf("host=%s dbname=%s user=%s password=%s", config.Host, config.DbName, config.User, config.Password)
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
