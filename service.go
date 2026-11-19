@@ -64,3 +64,18 @@ func keyValueGetHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("GET key=%s\n", key)
 }
+
+func keyValueDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key := vars["key"]
+
+	err := core.Delete(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	transact.WriteDelete(key)
+
+	log.Printf("DELETE key=%s\n", key)
+}
