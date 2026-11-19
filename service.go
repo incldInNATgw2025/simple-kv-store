@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io/ioutil"
 	"kv-store/core"
 	"kv-store/logger"
@@ -43,4 +44,23 @@ func keyValuePutHanler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 
 	log.Printf("PUT key%s value=%s\n", key, string(value))
+}
+
+func keyValueGetHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	key := vars["key"]
+
+	value, err := core.Get(key)
+	if errors.Is(err, core.ErrorNoSuchKey) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Write([]byte(value))
+
+	log.Printf("GET key=%s\n", key)
 }
