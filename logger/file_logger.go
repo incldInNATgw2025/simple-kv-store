@@ -107,3 +107,12 @@ func (l *FileTransactionLogger) ReadEvents() (<-chan event.Event, <-chan error) 
 	}()
 	return outEvent, outError
 }
+
+func NewFileTransactionLogger(filename string) (TransactionLogger, error) {
+	file, err := os.OpenFile(filename, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open transaction log file: %w", err)
+	}
+
+	return &FileTransactionLogger{file: file, wg: &sync.WaitGroup{}}, nil
+}
