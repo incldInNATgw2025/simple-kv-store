@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"kv-store/core"
+	"kv-store/event"
 	"kv-store/logger"
 	"log"
 	"net/http"
@@ -78,4 +80,68 @@ func keyValueDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	transact.WriteDelete(key)
 
 	log.Printf("DELETE key=%s\n", key)
+}
+
+func initializeTransactionLog() error {
+	var err error
+	transact, err = logger.NewPostgresTransactionLogger(logger.PostgresDBParams{
+		Host:     "localhost",
+		DbName:   "kvs",
+		User:     "test",
+		Password: "hunter2",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create transaction logger: %w", err)
+	}
+
+	events, errors := transact.ReadEvents()
+	count, ok, e := 0, true, event.Event{}
+
+	for ok && err == nil {
+		select {
+		case err, ok = <-errors:
+		case e, ok = <-events:
+			switch e.EventType {
+			case event.EventDelete:
+				err = core.Delete(e.Key)
+				count++
+			case event.EventPut:
+				err = Put(e.Key, e.Value)
+				count++
+			}
+		}
+	}
+	log.Printf("%d events replayed\n", count)
+	transact.Run()
+
+	go func(){
+		for err := range transact.Err() {
+			log.Print(err)
+		}
+	}()
+
+	return err
+}
+
+func main() {
+	// Initializes the transaction log and loads existing data, if any.
+	// Blocks until all data is read.
+	err := initializeTransactionLog()
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a new mux router
+	r := mux.NewRouter()
+
+	r.Use(loggingMiddleware)
+
+	r.HandleFunc("/v1/{key}", keyValueGetHandler).Methods("GET")
+	r.HandleFunc("/v1/{key}", keyValuePutHandler).Methods("PUT")
+	r.HandleFunc("/v1/{key}", keyValueDeleteHandler).Methods("DELETE")
+
+	r.HandleFunc("/v1", notAllowedHandler)
+	r.HandleFunc("/v1/{key}", notAllowedHandler)
+
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
