@@ -26,7 +26,7 @@ func notAllowedHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Not Allowed", http.StatusMethodNotAllowed)
 }
 
-func keyValuePutHanler(w http.ResponseWriter, r *http.Request) {
+func keyValuePutHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["key"]
 
@@ -106,7 +106,7 @@ func initializeTransactionLog() error {
 				err = core.Delete(e.Key)
 				count++
 			case event.EventPut:
-				err = Put(e.Key, e.Value)
+				err = core.Put(e.Key, e.Value)
 				count++
 			}
 		}
@@ -114,7 +114,7 @@ func initializeTransactionLog() error {
 	log.Printf("%d events replayed\n", count)
 	transact.Run()
 
-	go func(){
+	go func() {
 		for err := range transact.Err() {
 			log.Print(err)
 		}
@@ -143,5 +143,5 @@ func main() {
 	r.HandleFunc("/v1", notAllowedHandler)
 	r.HandleFunc("/v1/{key}", notAllowedHandler)
 
-	log.Fatal(http.ListenAndServe(":8080", r))
+	log.Fatal(http.ListenAndServeTLS(":8080", "public.pem", "private.pem", r))
 }
