@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"kv-store/event"
 	"sync"
+
+	_ "github.com/lib/pq"
 )
 
 type PostgresTransactionLogger struct {
